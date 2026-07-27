@@ -4,6 +4,9 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"time"
+
+	"cross-border-ledger/backend/src/services"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq" // PostgreSQL driver
@@ -53,6 +56,32 @@ func main() {
 			"status":  "healthy",
 			"message": "Cross-Border Gin Backend Engine is active and operational",
 		})
+	})
+
+	// 5. Automated PDF Invoice Stream Download Engine
+	r.GET("/api/invoices/download", func(c *gin.Context) {
+		// Mock Data representing a cross-border transaction fetched from our PostgreSQL ledger
+		mockInvoice := services.InvoiceData{
+			InvoiceNumber: "INV-2026-001",
+			ClientEmail:   "billing@american-client.com",
+			Description:   "Senior Software Engineering Services Contract",
+			Amount:        5000.00,
+			Currency:      "USD",
+			ExchangeRate:  1.382500,
+			BaseAmount:    6912.50,
+			BaseCurrency:  "CAD",
+			Date:          time.Now(),
+		}
+
+		// Configure the browser headers to intercept this stream as a secure file attachment download
+		c.Header("Content-Disposition", "attachment; filename=invoice_"+mockInvoice.InvoiceNumber+".pdf")
+		c.Header("Content-Type", "application/pdf")
+
+		// Stream the generated document bytes cleanly over HTTP in real-time
+		err := services.GenerateInvoicePDF(c.Writer, mockInvoice)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate system document: " + err.Error()})
+		}
 	})
 
 	// 6. Launch the Server Live
