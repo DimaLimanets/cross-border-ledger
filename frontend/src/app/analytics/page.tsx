@@ -2,6 +2,10 @@ import React from 'react';
 import { DollarSign, Clock, CheckCircle2 } from 'lucide-react';
 import ThemeToggle from '@/components/ThemeToggle';
 import AnalyticsWorkspace from '@/components/AnalyticsWorkspace';
+import AnalyticsChart from '@/components/AnalyticsChart';
+
+// Force Next.js to treat this route as a fully dynamic page on every single request
+export const dynamic = 'force-dynamic';
 
 interface Invoice {
   id: string;
@@ -20,19 +24,19 @@ interface AnalyticsData {
   outstanding_ar: number;
   collection_rate: number;
   currency_exposure: Record<string, number>;
+  // Explicitly mapping the new backend time-series dataset
+  monthly_trends: Array<{ month: string; volume_usd: number; paid_usd: number }>;
 }
 
 // Unified server fetch to prevent multiple API hops
 async function getDashboardPayload(): Promise<{ analytics: AnalyticsData; invoices: Invoice[] }> {
   try {
     const [analyticsRes, invoicesRes] = await Promise.all([
-      fetch('http://localhost:8080/api/analytics', { next: { revalidate: 10 } }),
-      fetch('http://localhost:8080/api/invoices', { next: { revalidate: 10 } })
+      fetch('http://localhost:8080/api/analytics', { cache: 'no-store' }),
+      fetch('http://localhost:8080/api/invoices', { cache: 'no-store' })
     ]);
 
-    if (!analyticsRes.ok || !invoicesRes.ok) {
-      throw new Error('Ledger data downstream compilation failed');
-    }
+    if (!analyticsRes.ok || !invoicesRes.ok) throw new Error('Ledger data compilation failed');
 
     const [analytics, invoices] = await Promise.all([analyticsRes.json(), invoicesRes.json()]);
     return { analytics, invoices };
@@ -72,7 +76,7 @@ export default async function AnalyticsDashboardPage() {
       <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-5">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">Cross-Border Ledger Hub</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">Week 10 Financial Analytics and Live Ledger Stream Processing.</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">Week 12 Financial Analytics Visualization Engine.</p>
         </div>
         <ThemeToggle />
       </div>
@@ -94,6 +98,9 @@ export default async function AnalyticsDashboardPage() {
           );
         })}
       </div>
+
+      {/* Render chart directly using the clean, backend-supplied dynamic array */}
+      <AnalyticsChart trends={analytics.monthly_trends} />
 
       {/* Interactive Core Workspace Component */}
       <AnalyticsWorkspace initialInvoices={invoices} currencyExposure={analytics.currency_exposure} />

@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Globe, PlusCircle, FileText, Download } from 'lucide-react';
+import { Globe, PlusCircle, FileText, Download, Trash2, Search, Filter } from 'lucide-react';
 
 interface Invoice {
   id: string;
@@ -25,16 +25,17 @@ export default function AnalyticsWorkspace({ initialInvoices, currencyExposure }
   const router = useRouter();
   const [isOpen, setIsOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
-  // Add a local state tracker right inside your AnalyticsWorkspace component definition:
   const [invoices, setInvoices] = useState<Invoice[]>(initialInvoices);
 
-  // Quick effect hook to sync client state when the server payload updates
-  React.useEffect(() => {
+  // Advanced Filtering States
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [currencyFilter, setCurrencyFilter] = useState('all');
+
+  useEffect(() => {
     setInvoices(initialInvoices);
   }, [initialInvoices]);
 
-  // Local form tracking states
   const [form, setForm] = useState({
     invoiceNumber: '',
     senderCompany: '',
@@ -45,30 +46,42 @@ export default function AnalyticsWorkspace({ initialInvoices, currencyExposure }
     dueDate: '',
   });
 
+  // Client-Side Search and Filter Logic
+  const filteredInvoices = useMemo(() => {
+    return invoices.filter((inv) => {
+      const matchesSearch =
+        inv.senderCompany.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        inv.recipientCompany.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        inv.invoiceNumber.toLowerCase().includes(searchTerm.toLowerCase());
+
+      const matchesStatus = statusFilter === 'all' || inv.status === statusFilter;
+      const matchesCurrency = currencyFilter === 'all' || inv.currency === currencyFilter;
+
+      return matchesSearch && matchesStatus && matchesCurrency;
+    });
+  }, [invoices, searchTerm, statusFilter, currencyFilter]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
 
+    const temporaryID = `TEMP-${Date.now()}`;
+    const newInvoiceItem: Invoice = {
+      id: temporaryID,
+      invoiceNumber: form.invoiceNumber,
+      senderCompany: form.senderCompany,
+      recipientCompany: form.recipientCompany,
+      amount: parseFloat(form.amount) || 0,
+      currency: form.currency,
+      status: form.status,
+      dueDate: form.dueDate || new Date().toISOString().split('T')[0],
+      createdAt: new Date().toISOString()
+    };
+
+    setInvoices(prev => [newInvoiceItem, ...prev]);
+    setIsOpen(false);
+
     try {
-      // 1. Format the exact invoice structure matching your database outputs
-      const temporaryID = `TEMP-${Date.now()}`;
-      const newInvoiceItem: Invoice = {
-        id: temporaryID,
-        invoiceNumber: form.invoiceNumber,
-        senderCompany: form.senderCompany,
-        recipientCompany: form.recipientCompany,
-        amount: parseFloat(form.amount),
-        currency: form.currency,
-        status: form.status,
-        dueDate: form.dueDate,
-        createdAt: new Date().toISOString()
-      };
-
-      // 2. OPTIMISTIC UPDATE: Instantly inject the row into the UI view so the user sees it immediately
-      setInvoices(prev => [newInvoiceItem, ...prev]);
-      setIsOpen(false); // Close the form modal right away for snappy performance
-
-      // 3. Dispatch the real payload to the Go backend cluster behind the scenes
       const payload = { ...form, amount: parseFloat(form.amount) };
       const res = await fetch('http://localhost:8080/api/invoices', {
         method: 'POST',
@@ -78,31 +91,47 @@ export default function AnalyticsWorkspace({ initialInvoices, currencyExposure }
 
       if (!res.ok) throw new Error('Submission refused by ledger kernel');
 
-      // 4. Reset form values cleanly
       setForm({ invoiceNumber: '', senderCompany: '', recipientCompany: '', amount: '', currency: 'USD', status: 'pending', dueDate: '' });
-
-      // 5. Trigger the server refresh to sync the top KPI analytics counters over the network
-      router.refresh();
+      setTimeout(() => { router.refresh(); }, 400);
     } catch (err) {
-      alert('Failed to log new transaction parameters to database node');
-      // Revert back to original state if the database write physically fails
+      alert('Failed to log transaction');
       setInvoices(initialInvoices);
     } finally {
       setIsSubmitting(false);
     }
   };
 
+  const handleDelete = async (id: string) => {
+    if (!confirm('Are you sure you want to prune this transaction line from the live database ledger?')) return;
+
+    // Optimistic Delete: instantly wipe from layout list
+    const originalState = [...invoices];
+    setInvoices(prev => prev.filter(inv => inv.id !== id));
+
+    try {
+      const res = await fetch(`http://localhost:8080/api/invoices?id=${id}`, {
+        method: 'DELETE',
+      });
+
+      if (!res.ok) throw new Error('Delete call rejected by backend cluster');
+      setTimeout(() => { router.refresh(); }, 400);
+    } catch (err) {
+      alert('Failed to delete transaction line item');
+      setInvoices(originalState);
+    }
+  };
+
   return (
-    <div className="space-y-8">
-      {/* Section Action Controller */}
-      <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+    <div className="space-y-6">
+      {/* Workspace Action Controller Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
         <div className="flex items-center gap-3">
           <Globe className="w-5 h-5 text-indigo-500" />
-          <h2 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Multi-Currency & Active Invoices Ledger</h2>
+          <h2 className="text-sm font-bold text-slate-900 dark:text-white uppercase tracking-wider">Active Invoices Ledger</h2>
         </div>
         <button
           onClick={() => setIsOpen(true)}
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold shadow transition-all"
+          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold shadow transition-all self-start sm:self-auto"
         >
           <PlusCircle className="w-4 h-4" /> Add New Invoice
         </button>
@@ -120,6 +149,46 @@ export default function AnalyticsWorkspace({ initialInvoices, currencyExposure }
         ))}
       </div>
 
+      {/* Advanced Filter Deck Controls */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200/60 dark:border-slate-800/80 shadow-sm">
+        <div className="relative">
+          <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+          <input
+            type="text"
+            placeholder="Search ledger entities..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full pl-9 pr-4 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-xs text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:border-indigo-500 transition-colors"
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <Filter className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="w-full px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-xs text-slate-700 dark:text-slate-300 focus:outline-none"
+          >
+            <option value="all">All Statuses</option>
+            <option value="paid">Paid Only</option>
+            <option value="pending">Pending Only</option>
+            <option value="overdue">Overdue Only</option>
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
+          <Globe className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+          <select
+            value={currencyFilter}
+            onChange={(e) => setCurrencyFilter(e.target.value)}
+            className="w-full px-3 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg text-xs text-slate-700 dark:text-slate-300 focus:outline-none"
+          >
+            <option value="all">All Currencies</option>
+            <option value="USD">USD ($)</option>
+            <option value="EUR">EUR (€)</option>
+            <option value="GBP">GBP (£)</option>
+          </select>
+        </div>
+      </div>
+
       {/* Itemized Database Ledger Table Row Viewer */}
       <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
@@ -134,7 +203,7 @@ export default function AnalyticsWorkspace({ initialInvoices, currencyExposure }
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 text-sm">
-              {invoices.map((inv) => (
+              {filteredInvoices.map((inv) => (
                 <tr key={inv.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-950/40 transition-colors">
                   <td className="p-4 font-mono text-xs text-slate-500 dark:text-slate-400">
                     <div className="flex items-center gap-2">
@@ -158,22 +227,36 @@ export default function AnalyticsWorkspace({ initialInvoices, currencyExposure }
                       {inv.status}
                     </span>
                   </td>
-                  <td className="p-4 text-right">
+                  <td className="p-4 text-right flex items-center justify-end gap-2">
                     <a
                       href={`http://localhost:8080/api/invoices/download?id=${inv.id}`}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-300 transition-all"
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-300 transition-all"
                     >
                       <Download className="w-3.5 h-3.5" /> PDF
                     </a>
+                    <button
+                      onClick={() => handleDelete(inv.id)}
+                      className="inline-flex items-center justify-center p-1.5 border border-transparent text-rose-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg transition-all"
+                      title="Prune Record Line"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </td>
                 </tr>
               ))}
+              {filteredInvoices.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="p-8 text-center text-xs text-slate-400 dark:text-slate-500">
+                    Zero ledger items correspond to active query constraints.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* Week 8 Form Overlay Dialog Modal */}
+      {/* Form Overlay Dialog Modal */}
       {isOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4">
           <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-xl border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
@@ -207,7 +290,7 @@ export default function AnalyticsWorkspace({ initialInvoices, currencyExposure }
                 </div>
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Asset Class</label>
-        <select value={form.currency} onChange={e => setForm({...form, currency: e.target.value})} className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-sm text-slate-900 dark:text-white">
+                  <select value={form.currency} onChange={e => setForm({...form, currency: e.target.value})} className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg text-sm text-slate-900 dark:text-white">
                     <option value="USD">USD</option>
                     <option value="EUR">EUR</option>
                     <option value="GBP">GBP</option>

@@ -28,6 +28,12 @@ type Invoice struct {
 	CreatedAt        time.Time `json:"createdAt"`
 }
 
+type MonthlyTrend struct {
+	Month     string  `json:"month"`
+	VolumeUSD float64 `json:"volume_usd"`
+	PaidUSD   float64 `json:"paid_usd"`
+}
+
 func CORSMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
@@ -266,7 +272,34 @@ func main() {
 		c.JSON(http.StatusCreated, createdInvoice)
 	})
 
-	// 5. FINANCIAL ANALYTICS TICKERS ENGINE ENDPOINT (Week 10 - Normalized FX Upgrade)
+	// 5. LEDGER RECORD PRUNING CONTROL ENDPOINT (Week 12 Upgrade)
+	r.DELETE("/api/invoices", func(c *gin.Context) {
+		invoiceID := c.Query("id")
+		if invoiceID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing mandatory URL query parameter 'id'"})
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 4*time.Second)
+		defer cancel()
+
+		result, err := db.ExecContext(ctx, "DELETE FROM invoices WHERE id = $1", invoiceID)
+		if err != nil {
+			log.Printf("Failed to execute database deletion query: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete record from ledger database"})
+			return
+		}
+
+		rowsAffected, err := result.RowsAffected()
+		if err != nil || rowsAffected == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "No transaction row found matching the specified id"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "Transaction row purged from ledger database"})
+	})
+
+	// 6. FINANCIAL ANALYTICS TICKERS ENGINE ENDPOINT (Week 10 - Normalized FX Upgrade)
 	r.GET("/api/analytics", func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 		defer cancel()
@@ -351,11 +384,62 @@ func main() {
 			collectionRate = (paidVolUSD / totalVolUSD) * 100
 		}
 
+		// 4. Query month-over-month volume/paid totals (grouped by due date) for the trend chart
+		trendRows, err := db.QueryContext(ctx, `
+			SELECT TO_CHAR(due_date, 'YYYY-MM') AS invoice_month, currency,
+			       COALESCE(SUM(amount), 0) AS total_amount,
+			       COALESCE(SUM(CASE WHEN status = 'paid' THEN amount ELSE 0 END), 0) AS paid_amount
+			FROM invoices
+			WHERE created_at >= NOW() - INTERVAL '365 days'
+			GROUP BY invoice_month, currency
+			ORDER BY invoice_month ASC
+		`)
+		if err != nil {
+			log.Printf("Trend query extraction failed: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to compile monthly trend row data"})
+			return
+		}
+		defer trendRows.Close()
+
+		trendMap := make(map[string]*MonthlyTrend)
+		var orderedMonths []string
+
+		for trendRows.Next() {
+			var month, currency string
+			var totalAmt, paidAmt float64
+			if err := trendRows.Scan(&month, &currency, &totalAmt, &paidAmt); err != nil {
+				log.Printf("Trend row scan failure: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process monthly trend row data"})
+				return
+			}
+
+			var rateToUSD float64 = 1.0
+			switch currency {
+			case "EUR":
+				rateToUSD = 1.08
+			case "GBP":
+				rateToUSD = 1.27
+			}
+
+			if _, exists := trendMap[month]; !exists {
+				trendMap[month] = &MonthlyTrend{Month: month}
+				orderedMonths = append(orderedMonths, month)
+			}
+			trendMap[month].VolumeUSD += totalAmt * rateToUSD
+			trendMap[month].PaidUSD += paidAmt * rateToUSD
+		}
+
+		monthlyTrends := []MonthlyTrend{}
+		for _, month := range orderedMonths {
+			monthlyTrends = append(monthlyTrends, *trendMap[month])
+		}
+
 		c.JSON(http.StatusOK, gin.H{
 			"total_volume":      totalVolUSD,
 			"outstanding_ar":    openARUSD,
 			"collection_rate":   collectionRate,
 			"currency_exposure": currencyExposure,
+			"monthly_trends":    monthlyTrends,
 		})
 	})
 
