@@ -2,8 +2,10 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"cross-border-ledger/backend/src/services"
@@ -116,31 +118,70 @@ func main() {
 		c.JSON(http.StatusOK, invoices)
 	})
 
-	// 5. Automated PDF Invoice Stream Download Engine
+		// 5. AUTOMATED LIVE DYNAMIC PDF INVOICE STREAM DOWNLOAD ENGINE
 	r.GET("/api/invoices/download", func(c *gin.Context) {
-		// Mock Data representing a cross-border transaction fetched from our PostgreSQL ledger
-		mockInvoice := services.InvoiceData{
-			InvoiceNumber: "INV-2026-001",
-			ClientEmail:   "billing@american-client.com",
-			Description:   "Senior Software Engineering Services Contract",
-			Amount:        5000.00,
-			Currency:      "USD",
-			ExchangeRate:  1.382500,
-			BaseAmount:    6912.50,
-			BaseCurrency:  "CAD",
+		// 1. Extract the unique tracking ID parameters from the frontend download link
+		invoiceID := c.Query("id")
+		if invoiceID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing mandatory URL query parameter 'id'"})
+			return
+		}
+
+		// 2. Fetch row details directly from Neon Cloud PostgreSQL
+		var inv Invoice
+		err := db.QueryRow("SELECT id, invoice_number, sender_company, recipient_company, amount, currency, status, due_date, created_at FROM invoices WHERE id = $1", invoiceID).
+			Scan(&inv.ID, &inv.InvoiceNumber, &inv.SenderCompany, &inv.RecipientCompany, &inv.Amount, &inv.Currency, &inv.Status, &inv.DueDate, &inv.CreatedAt)
+
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusNotFound, gin.H{"error": "The specified invoice tracking ID was not found in the ledger database"})
+			return
+		} else if err != nil {
+			log.Printf("Ledger tracking lookup database error: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to look up record for document compilation"})
+			return
+		}
+
+		// 3. Runtime Exchange Rate Cross-Border Router (Normalizing everything to a CAD corporate base)
+		var rate float64 = 1.00
+		switch inv.Currency {
+		case "EUR":
+			rate = 1.485000
+		case "GBP":
+			rate = 1.762000
+		case "USD":
+			rate = 1.374000
+		default:
+			rate = 1.000000 // Falls back to standard 1:1 ratio if transaction is native
+		}
+
+		// Calculate total base ledger parameters dynamically
+		calculatedBaseAmount := inv.Amount * rate
+
+		// 4. Map your live database rows directly into your custom FPDF template structure blocks
+		liveInvoiceDoc := services.InvoiceData{
+			InvoiceNumber: inv.InvoiceNumber,
+			ClientEmail:   "finance@" + strings.ToLower(strings.ReplaceAll(inv.RecipientCompany, " ", "-")) + ".com",
+			Description:   fmt.Sprintf("Cross-Border Settlement Contract: %s to %s", inv.SenderCompany, inv.RecipientCompany),
+			Amount:        inv.Amount,
+			Currency:      inv.Currency,
+			ExchangeRate:  rate,
+			BaseAmount:    calculatedBaseAmount,
+			BaseCurrency:  "CAD", // Your localized corporate reporting framework currency base
 			Date:          time.Now(),
 		}
 
-		// Configure the browser headers to intercept this stream as a secure file attachment download
-		c.Header("Content-Disposition", "attachment; filename=invoice_"+mockInvoice.InvoiceNumber+".pdf")
+		// 5. Configure content headers to route the stream straight as an absolute PDF file asset attachment
+		c.Header("Content-Disposition", "attachment; filename=invoice_"+liveInvoiceDoc.InvoiceNumber+".pdf")
 		c.Header("Content-Type", "application/pdf")
 
-		// Stream the generated document bytes cleanly over HTTP in real-time
-		err := services.GenerateInvoicePDF(c.Writer, mockInvoice)
+		// 6. Stream the freshly generated document bytes over HTTP to the user in real-time
+		err = services.GenerateInvoicePDF(c.Writer, liveInvoiceDoc)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate system document: " + err.Error()})
+			log.Printf("FPDF compilation engine worker failure: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to complete document streaming rendering path: " + err.Error()})
 		}
 	})
+
 
 	// 6. Launch the Server Live
 	log.Printf("Gin web server initializing on http://localhost:%s", port)
