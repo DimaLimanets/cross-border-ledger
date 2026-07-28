@@ -43,7 +43,6 @@ func CORSMiddleware() gin.HandlerFunc {
 	}
 }
 
-
 func main() {
 	// 1. Initialize Viper to read your .env file
 	viper.SetConfigFile(".env")
@@ -118,7 +117,7 @@ func main() {
 		c.JSON(http.StatusOK, invoices)
 	})
 
-		// 5. AUTOMATED LIVE DYNAMIC PDF INVOICE STREAM DOWNLOAD ENGINE
+	// 5. AUTOMATED LIVE DYNAMIC PDF INVOICE STREAM DOWNLOAD ENGINE
 	r.GET("/api/invoices/download", func(c *gin.Context) {
 		// 1. Extract the unique tracking ID parameters from the frontend download link
 		invoiceID := c.Query("id")
@@ -182,6 +181,64 @@ func main() {
 		}
 	})
 
+	// 4. INBOUND TRANSACTION LEDGER ADDITION ENDPOINT
+	r.POST("/api/invoices", func(c *gin.Context) {
+		// Temporary landing struct to parse parameters sent from the Next.js form
+		type NewInvoiceInput struct {
+			InvoiceNumber    string  `json:"invoiceNumber" binding:"required"`
+			SenderCompany    string  `json:"senderCompany" binding:"required"`
+			RecipientCompany string  `json:"recipientCompany" binding:"required"`
+			Amount           float64 `json:"amount" binding:"required,gt=0"`
+			Currency         string  `json:"currency" binding:"required"`
+			Status           string  `json:"status" binding:"required"`
+			DueDate          string  `json:"dueDate" binding:"required"` // Parsed as a string from the calendar input
+		}
+
+		var input NewInvoiceInput
+		// Enforces validation checks and maps the JSON request body automatically
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payload validation constraints: " + err.Error()})
+			return
+		}
+
+		// Convert frontend calendar input string text into a strict transactional time object layout
+		parsedDueDate, err := time.Parse("2006-01-02", input.DueDate)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid date structural formatting. Enforce YYYY-MM-DD"})
+			return
+		}
+
+		// Generate a simple dynamic pseudo-UUID tracking primary key
+		newID := fmt.Sprintf("%d", time.Now().UnixNano())
+		createdAt := time.Now()
+
+		// Execute strict SQL command syntax parameters to persist ledger rows cleanly into Neon Postgres
+		query := `
+			INSERT INTO invoices (id, invoice_number, sender_company, recipient_company, amount, currency, status, due_date, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`
+		_, err = db.Exec(query, newID, input.InvoiceNumber, input.SenderCompany, input.RecipientCompany, input.Amount, input.Currency, input.Status, parsedDueDate, createdAt)
+		if err != nil {
+			log.Printf("Persistence write operation execution failure: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist transaction ledger record row entries"})
+			return
+		}
+
+		// Build a response structure representing what was successfully written to the ledger database
+		createdInvoice := Invoice{
+			ID:               newID,
+			InvoiceNumber:    input.InvoiceNumber,
+			SenderCompany:    input.SenderCompany,
+			RecipientCompany: input.RecipientCompany,
+			Amount:           input.Amount,
+			Currency:         input.Currency,
+			Status:           input.Status,
+			DueDate:          parsedDueDate,
+			CreatedAt:        createdAt,
+		}
+
+		c.JSON(http.StatusCreated, createdInvoice)
+	})
 
 	// 6. Launch the Server Live
 	log.Printf("Gin web server initializing on http://localhost:%s", port)
