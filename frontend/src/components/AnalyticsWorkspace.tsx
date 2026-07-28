@@ -2,7 +2,8 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Globe, PlusCircle, FileText, Download, Trash2, Search, Filter } from 'lucide-react';
+import { Globe, PlusCircle, FileText, Download, Trash2, Search, Filter, Activity } from 'lucide-react';
+import { API_AUTH_TOKEN } from '@/services/api';
 
 interface Invoice {
   id: string;
@@ -27,6 +28,10 @@ export default function AnalyticsWorkspace({ initialInvoices, currencyExposure }
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [invoices, setInvoices] = useState<Invoice[]>(initialInvoices);
 
+  // Live WebSocket FX Tick Tracker State
+  const [fxTicks, setFxTicks] = useState<{ EUR: number; GBP: number }>({ EUR: 1.08, GBP: 1.27 });
+  const [wsConnected, setWsConnected] = useState(false);
+
   // Advanced Filtering States
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -35,6 +40,27 @@ export default function AnalyticsWorkspace({ initialInvoices, currencyExposure }
   useEffect(() => {
     setInvoices(initialInvoices);
   }, [initialInvoices]);
+
+  // Connect to the live FX rate WebSocket stream on mount
+  useEffect(() => {
+    const socket = new WebSocket('ws://localhost:8080/api/ws/fx-rates');
+
+    socket.onopen = () => setWsConnected(true);
+    socket.onclose = () => setWsConnected(false);
+    socket.onerror = () => setWsConnected(false);
+    socket.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload?.rates?.EUR && payload?.rates?.GBP) {
+          setFxTicks({ EUR: payload.rates.EUR, GBP: payload.rates.GBP });
+        }
+      } catch {
+        // Ignore malformed frames
+      }
+    };
+
+    return () => socket.close();
+  }, []);
 
   const [form, setForm] = useState({
     invoiceNumber: '',
@@ -85,7 +111,10 @@ export default function AnalyticsWorkspace({ initialInvoices, currencyExposure }
       const payload = { ...form, amount: parseFloat(form.amount) };
       const res = await fetch('http://localhost:8080/api/invoices', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${API_AUTH_TOKEN}`,
+        },
         body: JSON.stringify(payload),
       });
 
@@ -111,6 +140,7 @@ export default function AnalyticsWorkspace({ initialInvoices, currencyExposure }
     try {
       const res = await fetch(`http://localhost:8080/api/invoices?id=${id}`, {
         method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${API_AUTH_TOKEN}` },
       });
 
       if (!res.ok) throw new Error('Delete call rejected by backend cluster');
@@ -123,6 +153,20 @@ export default function AnalyticsWorkspace({ initialInvoices, currencyExposure }
 
   return (
     <div className="space-y-6">
+      {/* Live Spot Market Ticker Panel */}
+      <div className="p-4 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl flex items-center justify-between shadow-inner">
+        <div className="flex items-center gap-2">
+          <Activity className={`w-4 h-4 ${wsConnected ? 'text-emerald-500 animate-pulse' : 'text-slate-300 dark:text-slate-700'}`} />
+          <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+            {wsConnected ? 'Live FX Spot Network Connected' : 'Connecting Market Spot Stream...'}
+          </span>
+        </div>
+        <div className="flex items-center gap-4 text-xs font-mono font-bold text-slate-600 dark:text-slate-300">
+          <span>EUR/USD: <span className="text-indigo-500">{fxTicks.EUR.toFixed(4)}</span></span>
+          <span>GBP/USD: <span className="text-indigo-500">{fxTicks.GBP.toFixed(4)}</span></span>
+        </div>
+      </div>
+
       {/* Workspace Action Controller Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
         <div className="flex items-center gap-3">

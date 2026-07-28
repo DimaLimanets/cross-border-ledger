@@ -5,6 +5,7 @@ go 1.26.5
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-pdf/fpdf v0.9.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/lib/pq v1.12.3
 	github.com/spf13/viper v1.21.0
 )

@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { DownloadCloud, Globe, CheckCircle2, Clock, AlertCircle, RefreshCw, PlusCircle, X } from 'lucide-react';
+import { API_AUTH_TOKEN } from '@/services/api';
 
 interface Invoice {
   id: string;
@@ -64,7 +65,10 @@ export default function DashboardPage() {
 
       const response = await fetch('http://localhost:8080/api/invoices', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${API_AUTH_TOKEN}`,
+        },
         body: JSON.stringify(payload),
       });
 

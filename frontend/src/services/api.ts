@@ -1,6 +1,9 @@
 // Resolves to http://localhost:8080 from your .env.local file
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080';
 
+// Must match SessionAuthToken in backend/main.go — required on the secured write/report routes
+export const API_AUTH_TOKEN = process.env.NEXT_PUBLIC_API_TOKEN || 'ledger-reporting-session-token-v1-verified';
+
 export interface Invoice {
   id: string;
   invoiceNumber: string;

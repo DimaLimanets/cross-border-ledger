@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"cross-border-ledger/backend/src/services"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/spf13/viper"
 )
@@ -32,6 +34,80 @@ type MonthlyTrend struct {
 	Month     string  `json:"month"`
 	VolumeUSD float64 `json:"volume_usd"`
 	PaidUSD   float64 `json:"paid_usd"`
+}
+
+// Shared bearer token for the secured write/report routes, and the identity attached to audit rows
+const SessionAuthToken = "ledger-reporting-session-token-v1-verified"
+const FallbackAuditUser = "compliance-officer@crossborder-ledger.internal"
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+// ensureAuditLogTable creates the audit trail table on startup if it doesn't already exist on Neon
+func ensureAuditLogTable(db *sql.DB) error {
+	_, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS invoice_audit_logs (
+			id SERIAL PRIMARY KEY,
+			invoice_id TEXT NOT NULL,
+			action_type TEXT NOT NULL,
+			performed_by TEXT NOT NULL,
+			old_values JSONB,
+			new_values JSONB,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+	`)
+	return err
+}
+
+// WriteImmutableAuditLog records a snapshot of an invoice mutation for compliance tracking
+func WriteImmutableAuditLog(db *sql.DB, invoiceID, actionType string, oldVal, newVal interface{}) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	var oldJSON, newJSON []byte
+	if oldVal != nil {
+		oldJSON, _ = json.Marshal(oldVal)
+	}
+	if newVal != nil {
+		newJSON, _ = json.Marshal(newVal)
+	}
+
+	query := `
+		INSERT INTO invoice_audit_logs (invoice_id, action_type, performed_by, old_values, new_values)
+		VALUES ($1, $2, $3, $4, $5);
+	`
+	_, err := db.ExecContext(ctx, query, invoiceID, actionType, FallbackAuditUser,
+		sql.NullString{String: string(oldJSON), Valid: oldVal != nil},
+		sql.NullString{String: string(newJSON), Valid: newVal != nil})
+
+	if err != nil {
+		log.Printf("AUDIT SYSTEM WARNING: Failed to record transaction lifecycle snapshot event: %v", err)
+	}
+}
+
+// AuthRequiredMiddleware guards the write/report routes with a static bearer token check
+func AuthRequiredMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Access token required to enter secure cross-border routing zone"})
+			c.Abort()
+			return
+		}
+
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		if token != SessionAuthToken {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Crypto-signature or token sequence is invalid or expired"})
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
 }
 
 func CORSMiddleware() gin.HandlerFunc {
@@ -84,6 +160,10 @@ func main() {
 	}
 	log.Println("🚀 Successfully connected to Neon Cloud PostgreSQL database!")
 
+	if err := ensureAuditLogTable(db); err != nil {
+		log.Fatalf("Failed to provision audit log table: %v", err)
+	}
+
 	// 4. Initialize the Gin Engine Router & Attach Middleware
 	r := gin.Default()
 	r.Use(CORSMiddleware()) // Attaches CORS rules universally to every endpoint
@@ -94,6 +174,48 @@ func main() {
 			"status":  "healthy",
 			"message": "Cross-Border Gin Backend Engine is active and operational",
 		})
+	})
+
+	// LIVE REAL-TIME FX EXCHANGE RATE WEBSOCKET STREAM
+	r.GET("/api/ws/fx-rates", func(c *gin.Context) {
+		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+		if err != nil {
+			log.Printf("WebSocket upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		log.Println("📡 New FX rate tracking stream client connected via WebSocket")
+
+		fxKey := viper.GetString("FX_API_KEY")
+		ticker := time.NewTicker(4 * time.Second)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			var rateEUR, rateGBP float64 = 1.08, 1.27
+			if fxKey != "" {
+				if rEUR, err := services.FetchLiveRate(fxKey, "EUR"); err == nil && rEUR > 0 {
+					rateEUR = 1.0 / rEUR
+				}
+				if rGBP, err := services.FetchLiveRate(fxKey, "GBP"); err == nil && rGBP > 0 {
+					rateGBP = 1.0 / rGBP
+				}
+			}
+
+			payload := map[string]interface{}{
+				"timestamp": time.Now().Format(time.RFC3339),
+				"base":      "USD",
+				"rates": map[string]float64{
+					"USD": 1.0,
+					"EUR": rateEUR,
+					"GBP": rateGBP,
+				},
+			}
+
+			if err := conn.WriteJSON(payload); err != nil {
+				log.Println("WebSocket write failed, closing connection")
+				return
+			}
+		}
 	})
 
 	// 3. LIVE DATABASE INVOICES STREAM DATA ENDPOINT
@@ -213,8 +335,12 @@ func main() {
 		}
 	})
 
+	// SECURE ZONE - writes and reports require a valid bearer token and are audit-logged
+	secureAPI := r.Group("/api")
+	secureAPI.Use(AuthRequiredMiddleware())
+
 	// 4. INBOUND TRANSACTION LEDGER ADDITION ENDPOINT
-	r.POST("/api/invoices", func(c *gin.Context) {
+	secureAPI.POST("/invoices", func(c *gin.Context) {
 		// Temporary landing struct to parse parameters sent from the Next.js form
 		type NewInvoiceInput struct {
 			InvoiceNumber    string  `json:"invoiceNumber" binding:"required"`
@@ -269,11 +395,13 @@ func main() {
 			CreatedAt:        createdAt,
 		}
 
+		WriteImmutableAuditLog(db, newID, "CREATED", nil, createdInvoice)
+
 		c.JSON(http.StatusCreated, createdInvoice)
 	})
 
 	// 5. LEDGER RECORD PRUNING CONTROL ENDPOINT (Week 12 Upgrade)
-	r.DELETE("/api/invoices", func(c *gin.Context) {
+	secureAPI.DELETE("/invoices", func(c *gin.Context) {
 		invoiceID := c.Query("id")
 		if invoiceID == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Missing mandatory URL query parameter 'id'"})
@@ -282,6 +410,11 @@ func main() {
 
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 4*time.Second)
 		defer cancel()
+
+		// Snapshot the row before deletion so the audit trail retains what was removed
+		var deletedInvoice Invoice
+		_ = db.QueryRowContext(ctx, "SELECT id, invoice_number, sender_company, recipient_company, amount, currency, status, due_date, created_at FROM invoices WHERE id = $1", invoiceID).
+			Scan(&deletedInvoice.ID, &deletedInvoice.InvoiceNumber, &deletedInvoice.SenderCompany, &deletedInvoice.RecipientCompany, &deletedInvoice.Amount, &deletedInvoice.Currency, &deletedInvoice.Status, &deletedInvoice.DueDate, &deletedInvoice.CreatedAt)
 
 		result, err := db.ExecContext(ctx, "DELETE FROM invoices WHERE id = $1", invoiceID)
 		if err != nil {
@@ -296,11 +429,13 @@ func main() {
 			return
 		}
 
+		WriteImmutableAuditLog(db, invoiceID, "PRUNED", deletedInvoice, nil)
+
 		c.JSON(http.StatusOK, gin.H{"message": "Transaction row purged from ledger database"})
 	})
 
 	// 6. FINANCIAL ANALYTICS TICKERS ENGINE ENDPOINT (Week 10 - Normalized FX Upgrade)
-	r.GET("/api/analytics", func(c *gin.Context) {
+	secureAPI.GET("/analytics", func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
 		defer cancel()
 

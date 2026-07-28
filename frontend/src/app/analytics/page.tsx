@@ -3,6 +3,7 @@ import { DollarSign, Clock, CheckCircle2 } from 'lucide-react';
 import ThemeToggle from '@/components/ThemeToggle';
 import AnalyticsWorkspace from '@/components/AnalyticsWorkspace';
 import AnalyticsChart from '@/components/AnalyticsChart';
+import { API_AUTH_TOKEN } from '@/services/api';
 
 // Force Next.js to treat this route as a fully dynamic page on every single request
 export const dynamic = 'force-dynamic';
@@ -32,7 +33,10 @@ interface AnalyticsData {
 async function getDashboardPayload(): Promise<{ analytics: AnalyticsData; invoices: Invoice[] }> {
   try {
     const [analyticsRes, invoicesRes] = await Promise.all([
-      fetch('http://localhost:8080/api/analytics', { cache: 'no-store' }),
+      fetch('http://localhost:8080/api/analytics', {
+        cache: 'no-store',
+        headers: { 'Authorization': `Bearer ${API_AUTH_TOKEN}` },
+      }),
       fetch('http://localhost:8080/api/invoices', { cache: 'no-store' })
     ]);
 
