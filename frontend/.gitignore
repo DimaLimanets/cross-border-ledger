@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+/.pnpm-store
+
+# Next.js Build Output
+.next/
+out/
+build/
+
+# TypeScript Build Info
+*.tsbuildinfo
+
+# Local Environment Variables
+.env*.local
+
+# Editor Configurations
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
