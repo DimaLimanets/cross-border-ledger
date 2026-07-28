@@ -117,7 +117,7 @@ func main() {
 		c.JSON(http.StatusOK, invoices)
 	})
 
-	// 5. AUTOMATED LIVE DYNAMIC PDF INVOICE STREAM DOWNLOAD ENGINE
+		// 5. AUTOMATED LIVE DYNAMIC PDF INVOICE STREAM DOWNLOAD ENGINE (Upgraded with Live FX API Integration)
 	r.GET("/api/invoices/download", func(c *gin.Context) {
 		// 1. Extract the unique tracking ID parameters from the frontend download link
 		invoiceID := c.Query("id")
@@ -140,20 +140,37 @@ func main() {
 			return
 		}
 
-		// 3. Runtime Exchange Rate Cross-Border Router (Normalizing everything to a CAD corporate base)
+		// 3. RUNTIME EXCHANGE RATE CROSS-BORDER ROUTER (Upgraded to Live API Ingestion)
+		fxKey := viper.GetString("FX_API_KEY")
+		
+		// Fallback to our previous safe benchmarks if the configuration key is missing or blank
 		var rate float64 = 1.00
-		switch inv.Currency {
-		case "EUR":
-			rate = 1.485000
-		case "GBP":
-			rate = 1.762000
-		case "USD":
-			rate = 1.374000
-		default:
-			rate = 1.000000 // Falls back to standard 1:1 ratio if transaction is native
+		var fxErr error
+
+		if fxKey != "" {
+			log.Printf("Querying live FX indexes for currency settlement: %s", inv.Currency)
+			rate, fxErr = services.FetchLiveRate(fxKey, inv.Currency)
+			if fxErr != nil {
+				log.Printf("Warning: Live FX fetch failed, resorting to structural defaults: %v", fxErr)
+				// Re-assign default matrix configurations if API falls over mid-flight
+				switch inv.Currency {
+				case "EUR": rate = 1.485
+				case "GBP": rate = 1.762
+				case "USD": rate = 1.374
+				default: rate = 1.000
+				}
+			}
+		} else {
+			log.Println("Notice: FX_API_KEY not supplied. Enforcing hardcoded parameters.")
+			switch inv.Currency {
+			case "EUR": rate = 1.485
+			case "GBP": rate = 1.762
+			case "USD": rate = 1.374
+			default: rate = 1.000
+			}
 		}
 
-		// Calculate total base ledger parameters dynamically
+		// Calculate total base ledger parameters dynamically using real-market metrics
 		calculatedBaseAmount := inv.Amount * rate
 
 		// 4. Map your live database rows directly into your custom FPDF template structure blocks
@@ -180,6 +197,7 @@ func main() {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to complete document streaming rendering path: " + err.Error()})
 		}
 	})
+
 
 	// 4. INBOUND TRANSACTION LEDGER ADDITION ENDPOINT
 	r.POST("/api/invoices", func(c *gin.Context) {
