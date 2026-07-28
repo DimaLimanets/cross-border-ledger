@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -117,7 +118,7 @@ func main() {
 		c.JSON(http.StatusOK, invoices)
 	})
 
-		// 5. AUTOMATED LIVE DYNAMIC PDF INVOICE STREAM DOWNLOAD ENGINE (Upgraded with Live FX API Integration)
+	// 5. AUTOMATED LIVE DYNAMIC PDF INVOICE STREAM DOWNLOAD ENGINE (Upgraded with Live FX API Integration)
 	r.GET("/api/invoices/download", func(c *gin.Context) {
 		// 1. Extract the unique tracking ID parameters from the frontend download link
 		invoiceID := c.Query("id")
@@ -142,7 +143,7 @@ func main() {
 
 		// 3. RUNTIME EXCHANGE RATE CROSS-BORDER ROUTER (Upgraded to Live API Ingestion)
 		fxKey := viper.GetString("FX_API_KEY")
-		
+
 		// Fallback to our previous safe benchmarks if the configuration key is missing or blank
 		var rate float64 = 1.00
 		var fxErr error
@@ -154,19 +155,27 @@ func main() {
 				log.Printf("Warning: Live FX fetch failed, resorting to structural defaults: %v", fxErr)
 				// Re-assign default matrix configurations if API falls over mid-flight
 				switch inv.Currency {
-				case "EUR": rate = 1.485
-				case "GBP": rate = 1.762
-				case "USD": rate = 1.374
-				default: rate = 1.000
+				case "EUR":
+					rate = 1.485
+				case "GBP":
+					rate = 1.762
+				case "USD":
+					rate = 1.374
+				default:
+					rate = 1.000
 				}
 			}
 		} else {
 			log.Println("Notice: FX_API_KEY not supplied. Enforcing hardcoded parameters.")
 			switch inv.Currency {
-			case "EUR": rate = 1.485
-			case "GBP": rate = 1.762
-			case "USD": rate = 1.374
-			default: rate = 1.000
+			case "EUR":
+				rate = 1.485
+			case "GBP":
+				rate = 1.762
+			case "USD":
+				rate = 1.374
+			default:
+				rate = 1.000
 			}
 		}
 
@@ -197,7 +206,6 @@ func main() {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to complete document streaming rendering path: " + err.Error()})
 		}
 	})
-
 
 	// 4. INBOUND TRANSACTION LEDGER ADDITION ENDPOINT
 	r.POST("/api/invoices", func(c *gin.Context) {
@@ -256,6 +264,99 @@ func main() {
 		}
 
 		c.JSON(http.StatusCreated, createdInvoice)
+	})
+
+	// 5. FINANCIAL ANALYTICS TICKERS ENGINE ENDPOINT (Week 10 - Normalized FX Upgrade)
+	r.GET("/api/analytics", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+		defer cancel()
+
+		// 1. Fetch raw transaction amounts grouped by currency and status
+		rows, err := db.QueryContext(ctx, `
+			SELECT currency, status, COALESCE(SUM(amount), 0)
+			FROM invoices
+			WHERE created_at >= NOW() - INTERVAL '365 days'
+			GROUP BY currency, status
+		`)
+		if err != nil {
+			log.Printf("Analytics query extraction failed: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to compile financial ledger row data"})
+			return
+		}
+		defer rows.Close()
+
+		var totalVolUSD, openARUSD, paidVolUSD float64
+		currencyExposure := make(map[string]float64)
+
+		fxKey := viper.GetString("FX_API_KEY")
+
+		// 2. Process records and normalize values to USD dynamically using Week 9 API matrix
+		for rows.Next() {
+			var currency, status string
+			var amount float64
+			if err := rows.Scan(&currency, &status, &amount); err != nil {
+				log.Printf("Row scan failure in analytics engine: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process ledger row data"})
+				return
+			}
+
+			// Keep a clean track of raw structural totals per currency code
+			currencyExposure[currency] += amount
+
+			// Determine FX Conversion Rate to target USD base reporting
+			var rateToUSD float64 = 1.0
+			if currency != "USD" && fxKey != "" {
+				// Query live spot market configurations using Week 9 service script
+				rate, err := services.FetchLiveRate(fxKey, currency)
+				if err == nil && rate > 0 {
+					// FetchLiveRate returns base to target currency.
+					// Calculate Inverse conversion scalar to transform asset to USD
+					rateToUSD = 1.0 / rate
+				} else {
+					log.Printf("Warning: Live FX conversion fell back to core parameters for: %s", currency)
+					switch currency {
+					case "EUR":
+						rate = 1.08 // standard corporate baseline approximation standard
+					case "GBP":
+						rate = 1.27
+					default:
+						rate = 1.0
+					}
+					rateToUSD = rate
+				}
+			} else if currency != "USD" {
+				// Static fallback conditions if FX environment key context is missing
+				switch currency {
+				case "EUR":
+					rateToUSD = 1.08
+				case "GBP":
+					rateToUSD = 1.27
+				}
+			}
+
+			amountInUSD := amount * rateToUSD
+
+			// Aggregate values into unified USD metric tiers
+			totalVolUSD += amountInUSD
+			if status != "paid" {
+				openARUSD += amountInUSD
+			} else {
+				paidVolUSD += amountInUSD
+			}
+		}
+
+		// 3. Secure safe calculation ratios
+		collectionRate := 0.0
+		if totalVolUSD > 0 {
+			collectionRate = (paidVolUSD / totalVolUSD) * 100
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"total_volume":      totalVolUSD,
+			"outstanding_ar":    openARUSD,
+			"collection_rate":   collectionRate,
+			"currency_exposure": currencyExposure,
+		})
 	})
 
 	// 6. Launch the Server Live
